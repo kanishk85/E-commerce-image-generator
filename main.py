@@ -1,7 +1,8 @@
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
-import os, shutil, uuid, random
+from fastapi.responses import Response
+from tempfile import TemporaryDirectory
+import io, os, random
 
 from normalize import normalize_product
 from generate import stability_generate
@@ -10,13 +11,6 @@ from PIL import Image, ImageDraw, ImageFilter
 app = FastAPI()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
-OUTPUT_DIR = os.path.join(BASE_DIR, "outputs")
-
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-app.mount("/outputs", StaticFiles(directory=OUTPUT_DIR), name="outputs")
 
 # ---------------------------
 # 1. THE BRAIN: TEMPLATE LIBRARY
@@ -103,110 +97,108 @@ def home():
     if not os.path.exists(index_path): return HTMLResponse("Index not found", 500)
     with open(index_path, "r", encoding="utf-8") as f: return f.read()
 
+def create_product_image(input_bytes: bytes, template: str, bg_style: str) -> bytes:
+    """Create an image using temporary files that are removed on return."""
+    canvas_size = 1024
+    floor_y = 860
+    tpl = TEMPLATES[template]
+
+    with TemporaryDirectory(prefix="product-image-") as temp_dir:
+        input_path = os.path.join(temp_dir, "upload")
+        with open(input_path, "wb") as input_file:
+            input_file.write(input_bytes)
+
+        from rembg import remove
+
+        removed_path = os.path.join(temp_dir, "removed.png")
+        with open(input_path, "rb") as input_file:
+            removed_bytes = remove(input_file.read())
+        with open(removed_path, "wb") as removed_file:
+            removed_file.write(removed_bytes)
+
+        norm_path = os.path.join(temp_dir, "normalized.png")
+        info = normalize_product(
+            removed_path,
+            norm_path,
+            canvas_size=canvas_size,
+            scale_ratio=0.55,
+            bottom_margin=140,
+        )
+        px, py = info["pos"]
+        pw, ph = info["size"]
+        feet_cx = px + pw // 2
+        feet_cy = py + ph
+
+        scene = Image.new("RGBA", (canvas_size, canvas_size), (0, 0, 0, 0))
+        if bg_style == "white":
+            wall_img = Image.new("RGBA", (canvas_size, floor_y), (255, 255, 255, 255))
+        else:
+            wall_img = generate_bokeh_wall(canvas_size, floor_y, tpl["wall_tone"])
+        scene.paste(wall_img, (0, 0))
+
+        draw = ImageDraw.Draw(scene)
+        draw_base_layer(
+            draw, tpl["type"], feet_cx, feet_cy, pw, ph,
+            floor_y, canvas_size, canvas_size, tpl["floor_color"]
+        )
+        init_path = os.path.join(temp_dir, "scene.png")
+        scene.save(init_path)
+
+        mask = Image.new("L", (canvas_size, canvas_size), 0)
+        mask_draw = ImageDraw.Draw(mask)
+        mask_draw.rectangle([(0, floor_y + 5), (canvas_size, canvas_size)], fill=255)
+        mask_path = os.path.join(temp_dir, "mask.png")
+        mask.filter(ImageFilter.GaussianBlur(5)).save(mask_path)
+
+        ai_path = os.path.join(temp_dir, "generated-background.png")
+        try:
+            stability_generate(
+                init_image_path=init_path,
+                mask_path=mask_path,
+                prompt=tpl["prompt"],
+                negative_prompt="clutter, messy, text, watermark, bad anatomy, duplicate",
+                out_path=ai_path,
+                cfg_scale=tpl["cfg"],
+                steps=30,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Image generation failed: {exc}") from exc
+
+        with Image.open(ai_path) as generated_background:
+            composed = generated_background.convert("RGBA")
+        with Image.open(norm_path) as normalized_product:
+            product = normalized_product.convert("RGBA")
+
+        shadow = Image.new("RGBA", (canvas_size, canvas_size), (0, 0, 0, 0))
+        shadow_draw = ImageDraw.Draw(shadow)
+        shadow_draw.ellipse(
+            [px + pw * 0.1, feet_cy - 15, px + pw * 0.9, feet_cy + 15],
+            fill=(0, 0, 0, 160),
+        )
+        shadow = shadow.filter(ImageFilter.GaussianBlur(10))
+        composed = Image.alpha_composite(composed, shadow)
+        composed.alpha_composite(product, dest=(0, 0))
+
+        output = io.BytesIO()
+        composed.convert("RGB").save(output, "JPEG", quality=95)
+        return output.getvalue()
+
+
 @app.post("/generate")
 async def generate(
     file: UploadFile = File(...),
     template: str = Form("wood"),
-    bg_style: str = Form("match")
+    bg_style: str = Form("match"),
 ):
-    if template not in TEMPLATES: return JSONResponse({"status": "error", "message": "Invalid template"})
+    if template not in TEMPLATES:
+        return JSONResponse({"status": "error", "message": "Invalid template"}, status_code=400)
     if bg_style not in {"match", "white"}:
         return JSONResponse({"status": "error", "message": "Invalid wall style"}, status_code=400)
 
-    task_id = uuid.uuid4().hex
-    canvas_size = 1024
-    tpl = TEMPLATES[template]
-    
-    # Standard Horizon for infinite floors, but adjustable
-    floor_y = 860 
-
-    # 1. Setup Files
-    filename = os.path.basename(file.filename or "upload")
-    input_path = os.path.join(UPLOAD_DIR, f"{task_id}_{filename}")
-    with open(input_path, "wb") as f: shutil.copyfileobj(file.file, f)
-
-    from rembg import remove
-    with open(input_path, "rb") as f: removed_bytes = remove(f.read())
-    removed_path = os.path.join(OUTPUT_DIR, f"removed_{task_id}.png")
-    with open(removed_path, "wb") as f: f.write(removed_bytes)
-
-    # 2. Normalize (Layer 1)
-    margin = 140
-    norm_path = os.path.join(OUTPUT_DIR, f"norm_{task_id}.png")
-    info = normalize_product(removed_path, norm_path, canvas_size=1024, scale_ratio=0.55, bottom_margin=margin)
-    
-    # Get Product Info
-    px, py = info["pos"]
-    pw, ph = info["size"]
-    feet_cx = px + pw // 2
-    feet_cy = py + ph
-
-    # 3. BUILD THE SCENE (Layer 3 + Layer 2)
-    scene = Image.new("RGBA", (canvas_size, canvas_size), (0,0,0,0))
-    
-    # --- LAYER 3: BACKGROUND (Wall) ---
-    if bg_style == "white":
-        wall_img = Image.new("RGBA", (canvas_size, floor_y), (255, 255, 255, 255))
-    else:
-        wall_img = generate_bokeh_wall(canvas_size, floor_y, tpl["wall_tone"])
-    scene.paste(wall_img, (0, 0))
-
-    # --- LAYER 2: BASE (Prop/Floor) ---
-    # We draw this directly onto the scene
-    draw = ImageDraw.Draw(scene)
-    draw_base_layer(draw, tpl["type"], feet_cx, feet_cy, pw, ph, floor_y, canvas_size, canvas_size, tpl["floor_color"])
-
-    # Save Guide
-    init_path = os.path.join(OUTPUT_DIR, f"init_{task_id}.png")
-    scene.save(init_path)
-
-    # 4. SMART MASKING
-    # We must mask ONLY the area we want the AI to texture.
-    # 1. Wall is Protected (Black)
-    # 2. Floor is Generated (White)
-    mask = Image.new("L", (canvas_size, canvas_size), 0)
-    mdraw = ImageDraw.Draw(mask)
-
-    # Unmask Floor
-    mdraw.rectangle([(0, floor_y + 5), (canvas_size, canvas_size)], fill=255)
-    
-    mask_path = os.path.join(OUTPUT_DIR, f"mask_{task_id}.png")
-    mask.filter(ImageFilter.GaussianBlur(5)).save(mask_path)
-
-    # 5. AI Generation
-    ai_path = os.path.join(OUTPUT_DIR, f"bg_{task_id}.png")
     try:
-        stability_generate(
-            init_image_path=init_path,
-            mask_path=mask_path,
-            prompt=tpl["prompt"],
-            negative_prompt="clutter, messy, text, watermark, bad anatomy, duplicate",
-            out_path=ai_path,
-            cfg_scale=tpl["cfg"],
-            steps=30
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Image generation failed: {exc}") from exc
+        image_bytes = await file.read()
+        result_bytes = create_product_image(image_bytes, template, bg_style)
+    finally:
+        await file.close()
 
-    # 6. COMPOSITE (Layer 1 on Top)
-    bg = Image.open(ai_path).convert("RGBA")
-    prod = Image.open(norm_path).convert("RGBA")
-    composed = bg.copy()
-
-    # Dynamic Shadow
-    shadow = Image.new("RGBA", (canvas_size, canvas_size), (0, 0, 0, 0))
-    sdraw = ImageDraw.Draw(shadow)
-    
-    # Shadow logic varies by prop type
-    sdraw.ellipse([px+pw*0.1, feet_cy-15, px+pw*0.9, feet_cy+15], fill=(0,0,0,160))
-        
-    shadow = shadow.filter(ImageFilter.GaussianBlur(10))
-    composed = Image.alpha_composite(composed, shadow)
-    
-    # Paste Product
-    composed.alpha_composite(prod, dest=(0, 0))
-
-    final_path = os.path.join(OUTPUT_DIR, f"final_{task_id}.jpg")
-    composed.convert("RGB").save(final_path, "JPEG", quality=95)
-
-    return {"status": "success", "final_image_url": f"/outputs/{os.path.basename(final_path)}"}
+    return Response(content=result_bytes, media_type="image/jpeg")

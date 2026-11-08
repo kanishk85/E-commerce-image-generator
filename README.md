@@ -49,4 +49,4 @@ A small FastAPI web app that removes the background from a product photo, create
 
 5. Open <http://127.0.0.1:8000>.
 
-Uploaded source images, generated outputs, and logs are kept in local runtime folders and are excluded from Git.
+Uploads and intermediate images are processed in a temporary directory and deleted after each request. The generated result is returned directly to the browser instead of being saved on the server.

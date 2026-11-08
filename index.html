@@ -43,6 +43,8 @@
   <img id="result" style="max-width:600px; border: 1px solid #ccc; margin-top: 20px; display: none;"/>
 
 <script>
+let resultObjectUrl = null;
+
 async function generate(){
   const fileInput = document.getElementById("file");
   const statusEl = document.getElementById("status");
@@ -63,21 +65,26 @@ async function generate(){
 
   statusEl.innerText = "Generating... (This takes ~15 seconds)";
   resultImg.style.display = "none";
+  if(resultObjectUrl){
+    URL.revokeObjectURL(resultObjectUrl);
+    resultObjectUrl = null;
+  }
 
   try {
     const res = await fetch("/generate", { method: "POST", body: fd });
-    const data = await res.json();
 
-    if(res.ok && data.status === "success"){
-      // Add timestamp to force reload image
-      resultImg.src = data.final_image_url + "?" + Date.now();
+    if(res.ok){
+      const imageBlob = await res.blob();
+      resultObjectUrl = URL.createObjectURL(imageBlob);
+      resultImg.src = resultObjectUrl;
       resultImg.style.display = "block";
       statusEl.innerText = "Done!";
     } else {
+      const data = await res.json().catch(() => ({}));
       statusEl.innerText = "Error: " + (data.message || data.detail || "Unknown error");
     }
   } catch (err) {
-    statusEl.innerText = "API Error: Check console";
+    statusEl.innerText = "API Error: " + err.message;
     console.error(err);
   }
 }
