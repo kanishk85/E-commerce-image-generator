@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Local environment and secrets
+.env
+.env.*
+
+# Runtime data (may contain private product images)
+/input.png
+/presets/basebg.png
+/uploads/*
+/outputs/*
+/logs/*
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

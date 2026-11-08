@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>AI Product BG Generator</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; }
+    .controls { margin: 20px 0; padding: 15px; border: 1px solid #ddd; border-radius: 8px; }
+    label { margin-right: 15px; cursor: pointer; }
+    button { padding: 10px 20px; background: #007bff; color: white; border: none; cursor: pointer; border-radius: 4px; }
+    button:hover { background: #0056b3; }
+  </style>
+</head>
+<body>
+  <h2>AI Studio Generator</h2>
+
+  <div class="controls">
+    <h3>1. Upload Product</h3>
+    <input type="file" id="file" />
+
+    <h3>2. Select Base Material</h3>
+    <select id="template">
+      <option value="wood">Rustic Wood</option>
+      <option value="marble">White Marble</option>
+      <option value="water">Water Surface</option>
+    </select>
+
+    <h3>3. Wall Style</h3>
+    <div>
+      <label>
+        <input type="radio" name="bg_style" value="match" checked> 
+        Match Floor (Texture)
+      </label>
+      <label>
+        <input type="radio" name="bg_style" value="white"> 
+        Clean White (Studio)
+      </label>
+    </div>
+  </div>
+
+  <button onclick="generate()">Generate Image</button>
+
+  <p id="status"></p>
+  <img id="result" style="max-width:600px; border: 1px solid #ccc; margin-top: 20px; display: none;"/>
+
+<script>
+async function generate(){
+  const fileInput = document.getElementById("file");
+  const statusEl = document.getElementById("status");
+  const resultImg = document.getElementById("result");
+
+  if(!fileInput.files.length){
+    alert("Please select an image first");
+    return;
+  }
+
+  const fd = new FormData();
+  fd.append("file", fileInput.files[0]);
+  fd.append("template", document.getElementById("template").value);
+  
+  // Get the selected radio button value (match vs white)
+  const bgStyle = document.querySelector('input[name="bg_style"]:checked').value;
+  fd.append("bg_style", bgStyle);
+
+  statusEl.innerText = "Generating... (This takes ~15 seconds)";
+  resultImg.style.display = "none";
+
+  try {
+    const res = await fetch("/generate", { method: "POST", body: fd });
+    const data = await res.json();
+
+    if(res.ok && data.status === "success"){
+      // Add timestamp to force reload image
+      resultImg.src = data.final_image_url + "?" + Date.now();
+      resultImg.style.display = "block";
+      statusEl.innerText = "Done!";
+    } else {
+      statusEl.innerText = "Error: " + (data.message || data.detail || "Unknown error");
+    }
+  } catch (err) {
+    statusEl.innerText = "API Error: Check console";
+    console.error(err);
+  }
+}
+</script>
+</body>
+</html>
