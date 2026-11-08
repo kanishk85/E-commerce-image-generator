@@ -63,7 +63,7 @@ async function generate(){
   const bgStyle = document.querySelector('input[name="bg_style"]:checked').value;
   fd.append("bg_style", bgStyle);
 
-  statusEl.innerText = "Generating... (This takes ~15 seconds)";
+  statusEl.innerText = "Generating image... First use or a sleeping server may take longer.";
   resultImg.style.display = "none";
   if(resultObjectUrl){
     URL.revokeObjectURL(resultObjectUrl);

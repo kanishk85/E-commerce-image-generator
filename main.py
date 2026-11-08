@@ -2,13 +2,15 @@ from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.responses import Response
 from tempfile import TemporaryDirectory
-import io, os, random
+import io, logging, os, random, time
+from functools import lru_cache
 
 from normalize import normalize_product
 from generate import stability_generate
 from PIL import Image, ImageDraw, ImageFilter
 
 app = FastAPI()
+logger = logging.getLogger("uvicorn.error")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -97,6 +99,27 @@ def home():
     if not os.path.exists(index_path): return HTMLResponse("Index not found", 500)
     with open(index_path, "r", encoding="utf-8") as f: return f.read()
 
+
+@app.head("/", include_in_schema=False)
+def home_head():
+    return Response(status_code=200)
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    return Response(status_code=204)
+
+
+@lru_cache(maxsize=1)
+def get_rembg_session():
+    from rembg import new_session
+
+    started = time.perf_counter()
+    logger.info("Loading the rembg model session")
+    session = new_session()
+    logger.info("rembg model session ready in %.1f seconds", time.perf_counter() - started)
+    return session
+
 def create_product_image(input_bytes: bytes, template: str, bg_style: str) -> bytes:
     """Create an image using temporary files that are removed on return."""
     canvas_size = 1024
@@ -111,8 +134,11 @@ def create_product_image(input_bytes: bytes, template: str, bg_style: str) -> by
         from rembg import remove
 
         removed_path = os.path.join(temp_dir, "removed.png")
+        removal_started = time.perf_counter()
+        logger.info("Removing the uploaded image background")
         with open(input_path, "rb") as input_file:
-            removed_bytes = remove(input_file.read())
+            removed_bytes = remove(input_file.read(), session=get_rembg_session())
+        logger.info("Background removal finished in %.1f seconds", time.perf_counter() - removal_started)
         with open(removed_path, "wb") as removed_file:
             removed_file.write(removed_bytes)
 
@@ -152,6 +178,8 @@ def create_product_image(input_bytes: bytes, template: str, bg_style: str) -> by
 
         ai_path = os.path.join(temp_dir, "generated-background.png")
         try:
+            generation_started = time.perf_counter()
+            logger.info("Requesting a background from Stability AI")
             stability_generate(
                 init_image_path=init_path,
                 mask_path=mask_path,
@@ -161,6 +189,7 @@ def create_product_image(input_bytes: bytes, template: str, bg_style: str) -> by
                 cfg_scale=tpl["cfg"],
                 steps=30,
             )
+            logger.info("Stability AI finished in %.1f seconds", time.perf_counter() - generation_started)
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"Image generation failed: {exc}") from exc
 
