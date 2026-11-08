@@ -226,6 +226,14 @@ async def generate(
 
     try:
         image_bytes = await file.read()
+        try:
+            with Image.open(io.BytesIO(image_bytes)) as uploaded_image:
+                uploaded_image.verify()
+        except (OSError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="Could not read that file as an image. Please upload a PNG, JPEG, or WebP image.",
+            ) from exc
         result_bytes = create_product_image(image_bytes, template, bg_style)
     finally:
         await file.close()
