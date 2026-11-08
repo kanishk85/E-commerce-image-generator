@@ -4,7 +4,7 @@ A small FastAPI web app that removes the background from a product photo, create
 
 ## Features
 
-- Product cutout using `rembg`
+- Lightweight product cutout using `rembg`'s `u2netp` model
 - Three scene styles: wood, marble, and water, with wall and floor treatments
 - White studio or matching textured wall
 - Stability AI image-to-image inpainting for scene generation

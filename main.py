@@ -115,8 +115,8 @@ def get_rembg_session():
     from rembg import new_session
 
     started = time.perf_counter()
-    logger.info("Loading the rembg model session")
-    session = new_session()
+    logger.info("Loading the lightweight rembg u2netp model session")
+    session = new_session("u2netp")
     logger.info("rembg model session ready in %.1f seconds", time.perf_counter() - started)
     return session
 
