@@ -8,7 +8,11 @@ from dotenv import load_dotenv
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-load_dotenv(os.path.join(BASE_DIR, ".env"))
+load_dotenv(
+    os.path.join(BASE_DIR, ".env"),
+    override=True,
+    encoding="utf-8-sig",
+)
 
 STABILITY_KEY = os.getenv("STABILITY_API_KEY", "")
 STABILITY_URL = (
